@@ -3162,7 +3162,10 @@
                 const result = await cloudFirstLogin(role, u, p, loginCompany);
                 valid = result.valid;
                 displayName = result.displayName;
-                if (result.notFound) {
+                if (result.suspended) {
+                    errEl.textContent = 'This account has been suspended. Please contact the ZamAgro administrator.';
+                    errEl.style.display = 'block';
+                } else if (result.notFound) {
                     errEl.textContent = 'No account found with that username. Make sure you are online and the company name is correct.';
                     errEl.style.display = 'block';
                 } else if (result.networkError) {
@@ -3252,6 +3255,9 @@
                     console.error('ZamAgro: cloud-first admin snapshot fetch failed', e);
                     return { valid: false, networkError: true, errorMessage: e && e.message };
                 }
+                if (snapshot && snapshot.settings && snapshot.settings.suspended) {
+                    return { valid: false, suspended: true };
+                }
                 rebuildLocalDataFromSnapshot(snapshot);
                 ensureSyncCode().catch(()=>{});
                 const adminSalt = genSalt();
@@ -3300,6 +3306,9 @@
                     console.error('ZamAgro: directory-based admin snapshot fetch failed', e);
                     return { valid: false, networkError: true, errorMessage: e && e.message };
                 }
+                if (snapshot && snapshot.settings && snapshot.settings.suspended) {
+                    return { valid: false, suspended: true };
+                }
                 rebuildLocalDataFromSnapshot(snapshot);
                 ensureSyncCode().catch(()=>{});
                 // Recreate the local admin (and client, if any) accounts so future logins on
@@ -3336,6 +3345,9 @@
             } catch (e) {
                 console.error('ZamAgro: staff snapshot fetch failed', e);
                 return { valid: false, networkError: true, errorMessage: e && e.message };
+            }
+            if (snapshot && snapshot.settings && snapshot.settings.suspended) {
+                return { valid: false, suspended: true };
             }
             rebuildLocalDataFromSnapshot(snapshot);
             // Recreate local accounts: this staff member as client, admin left absent (staff
@@ -6794,6 +6806,21 @@
                 localStorage.removeItem(LOCAL_SESSION_KEY);
                 showLanding();
                 return;
+            }
+
+            // Re-check suspension on every restored session (not just fresh logins) — an
+            // admin could suspend this business while the device was already logged in.
+            if (session.role === 'admin') {
+                try {
+                    const settings = await fetch(`${FIREBASE_CONFIG.databaseURL}/businesses/${cloudAuth.uid}/settings.json?auth=${idToken}`).then(r => r.json());
+                    if (settings && settings.suspended) {
+                        localStorage.removeItem(LOCAL_SESSION_KEY);
+                        clearCloudAuth();
+                        showLanding();
+                        setTimeout(() => showToast('This account has been suspended. Please contact the ZamAgro administrator.', 'danger'), 300);
+                        return;
+                    }
+                } catch(e) { /* if this check fails, don't block a legitimate session over a network blip */ }
             }
 
             currentUser = session.role;
