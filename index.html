@@ -999,6 +999,13 @@
                         </div>
                     </div>
                     <div id="staff-form-error" style="display:none;color:var(--danger);font-size:.82rem;margin-top:.5rem;"></div>
+
+                    <div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem;">
+                        <div style="font-weight:700;font-size:.82rem;color:var(--primary-dark);margin-bottom:.4rem;">Staff Access Link</div>
+                        <p style="color:var(--text-muted);font-size:.82rem;margin-bottom:.6rem;">Staff sign-ins use a rotating access code instead of your business ID directly. If you ever suspect it's been shared or compromised, regenerate it — the old one stops working immediately and staff accounts keep working with the new one.</p>
+                        <button class="btn btn-sm" onclick="handleRegenerateSyncCode()" id="btn-regen-synccode">🔄 Regenerate Staff Access Link</button>
+                        <span id="synccode-status" style="font-size:.8rem;color:var(--text-muted);margin-left:.6rem;"></span>
+                    </div>
                 </div>
 
 
@@ -1959,6 +1966,16 @@
             if (appCheckToken) headers['X-Firebase-AppCheck'] = appCheckToken;
             const resp = await fetch(url, { method, headers, body: method === 'DELETE' ? undefined : JSON.stringify(body) });
             if (!resp.ok) throw new Error(`Firebase ${method} ${path} failed: ${resp.status}`);
+            // Best-effort mirror to the public staff-access snapshot, so staff devices (which
+            // have no Firebase Auth of their own) stay in sync without businesses/{uid} itself
+            // ever needing to be publicly readable. Never let a mirror failure break the
+            // primary write — staff data just goes briefly stale, which self-heals next write.
+            const code = cloudAuth.syncCode || (dbLoad('settings') || {}).syncCode;
+            if (code) {
+                fetch(`${FIREBASE_CONFIG.databaseURL}/snapshots/${encodeURIComponent(code)}/${path}.json?auth=${idToken}`, {
+                    method, headers, body: method === 'DELETE' ? undefined : JSON.stringify(body)
+                }).catch(e => console.warn('ZamAgro Cloud: staff snapshot mirror failed', e));
+            }
             return resp.json().catch(() => null);
         }
 
@@ -1977,6 +1994,141 @@
             const resp = await fetch(`${FIREBASE_CONFIG.databaseURL}/businesses/${uid}.json`, signal ? { signal } : undefined);
             if (!resp.ok) throw new Error(`Could not load cloud data (${resp.status})`);
             return (await resp.json()) || {};
+        }
+
+        // Authenticated read of the owner's own business node — used for admin logins, which
+        // always have a real Firebase Auth session. Prefer this over the public snapshot fetch
+        // whenever a valid idToken is available, since it needs no public read rule at all.
+        async function fetchAuthedBusinessSnapshot(uid, idToken, signal) {
+            const resp = await fetch(`${FIREBASE_CONFIG.databaseURL}/businesses/${uid}.json?auth=${idToken}`, signal ? { signal } : undefined);
+            if (!resp.ok) throw new Error(`Could not load cloud data (${resp.status})`);
+            return (await resp.json()) || {};
+        }
+
+        // Fetches a business snapshot via its rotatable, public sync code instead of the real
+        // uid. This is the ONLY thing staff devices (no Firebase Auth of their own) can reach
+        // unauthenticated — the real business node stays private. See Database Rules:
+        // "snapshots/{code}" is public-read, and only writable by whoever owns that code
+        // (checked against "syncCodes/{code}").
+        async function fetchPublicSnapshotByCode(code, signal) {
+            if (!code) throw new Error('Staff access link is not set up for this business yet.');
+            const resp = await fetch(`${FIREBASE_CONFIG.databaseURL}/snapshots/${encodeURIComponent(code)}.json`, signal ? { signal } : undefined);
+            if (!resp.ok) throw new Error(`Could not load cloud data (${resp.status})`);
+            return (await resp.json()) || {};
+        }
+
+        function genSyncCode() {
+            const bytes = new Uint8Array(24);
+            (window.crypto || window.msCrypto).getRandomValues(bytes);
+            return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Builds the same full-snapshot shape staff devices expect and pushes it wholesale to
+        // snapshots/{code}. Called once whenever a code is created or rotated; day-to-day
+        // updates are mirrored incrementally by firebaseRequest() itself.
+        async function mirrorFullSnapshot(code) {
+            if (!cloudAuth || !code) return;
+            const idToken = await getFreshIdToken();
+            if (!idToken) return;
+            const full = {};
+            SYNC_COLLECTIONS.forEach(col => {
+                const arr = dbLoad(col) || [];
+                const obj = {};
+                arr.forEach(rec => { if (rec && rec.id) obj[rec.id] = rec; });
+                full[col] = obj;
+            });
+            full.settings = dbLoad('settings') || {};
+            await fetch(`${FIREBASE_CONFIG.databaseURL}/snapshots/${encodeURIComponent(code)}.json?auth=${idToken}`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full)
+            });
+        }
+
+        // Ensures this business has a staff-access sync code, generating and publishing one on
+        // first use (covers both brand-new accounts and pre-existing ones created before this
+        // feature existed). Safe to call repeatedly — no-ops once a code is cached.
+        async function ensureSyncCode() {
+            if (!cloudAuth) return null;
+            if (cloudAuth.syncCode) return cloudAuth.syncCode;
+            const existing = (dbLoad('settings') || {}).syncCode;
+            if (existing) {
+                cloudAuth.syncCode = existing;
+                saveCloudAuth(cloudAuth);
+                return existing;
+            }
+            const idToken = await getFreshIdToken();
+            if (!idToken) return null;
+            const code = genSyncCode();
+            try {
+                // Claim the code -> uid mapping first (rules only let you claim an unclaimed code).
+                await fetch(`${FIREBASE_CONFIG.databaseURL}/syncCodes/${code}.json?auth=${idToken}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cloudAuth.uid)
+                });
+                const s = dbLoad('settings') || {};
+                s.syncCode = code;
+                localStorage.setItem(KEYS.settings, JSON.stringify(s));
+                await firebaseRequest('PUT', 'settings', s);
+                await mirrorFullSnapshot(code);
+                cloudAuth.syncCode = code;
+                saveCloudAuth(cloudAuth);
+                return code;
+            } catch (e) {
+                console.warn('ZamAgro Cloud: failed to set up staff access code', e);
+                return null;
+            }
+        }
+
+        async function handleRegenerateSyncCode() {
+            const btn = document.getElementById('btn-regen-synccode');
+            const statusEl = document.getElementById('synccode-status');
+            if (!cloudAuth) { showToast('Connect cloud sync first.', 'danger'); return; }
+            if (!confirm('Regenerate the staff access link? Any staff device that hasn\'t signed in recently will need to sign in again, but their username/password stays the same.')) return;
+            btn.disabled = true;
+            if (statusEl) statusEl.textContent = 'Rotating…';
+            const ok = await regenerateSyncCode();
+            btn.disabled = false;
+            if (statusEl) statusEl.textContent = ok ? 'Done — old link is now invalid.' : 'Failed — check your connection and try again.';
+            showToast(ok ? 'Staff access link regenerated.' : 'Could not regenerate the link.', ok ? 'ok' : 'danger');
+        }
+
+        // Rotates the staff-access code: old one stops working immediately (mapping + mirrored
+        // snapshot both deleted), a fresh one is minted, and every existing staff account's
+        // directory entry is republished so their logins keep working with the new code.
+        async function regenerateSyncCode() {
+            if (!cloudAuth) return false;
+            const idToken = await getFreshIdToken();
+            if (!idToken) return false;
+            const oldCode = cloudAuth.syncCode || (dbLoad('settings') || {}).syncCode;
+            const newCode = genSyncCode();
+            try {
+                await fetch(`${FIREBASE_CONFIG.databaseURL}/syncCodes/${newCode}.json?auth=${idToken}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cloudAuth.uid)
+                });
+                const s = dbLoad('settings') || {};
+                s.syncCode = newCode;
+                localStorage.setItem(KEYS.settings, JSON.stringify(s));
+                await firebaseRequest('PUT', 'settings', s);
+                await mirrorFullSnapshot(newCode);
+                cloudAuth.syncCode = newCode;
+                saveCloudAuth(cloudAuth);
+                // Invalidate the old code so a leaked link stops working right away.
+                if (oldCode && oldCode !== newCode) {
+                    fetch(`${FIREBASE_CONFIG.databaseURL}/snapshots/${oldCode}.json?auth=${idToken}`, { method: 'DELETE' }).catch(()=>{});
+                    fetch(`${FIREBASE_CONFIG.databaseURL}/syncCodes/${oldCode}.json?auth=${idToken}`, { method: 'DELETE' }).catch(()=>{});
+                }
+                // Republish every existing staff account's directory entry with the new code.
+                const accounts = getAccounts();
+                const clients = (accounts && accounts.clients) || [null, null];
+                for (const c of clients) {
+                    if (!c) continue;
+                    await publishUsernameDirectoryEntry(idToken, c.username, {
+                        uid: cloudAuth.uid, email: cloudAuth.email, role: 'client', salt: c.salt, hash: c.hash, syncCode: newCode
+                    });
+                }
+                return true;
+            } catch (e) {
+                console.warn('ZamAgro Cloud: failed to rotate staff access code', e);
+                return false;
+            }
         }
 
         // Replaces ALL local collections + settings with the contents of a full business
@@ -2470,6 +2622,7 @@
             // settings.companyName wasn't saved yet at that point — force-push now that cloudAuth
             // exists so company name is guaranteed to reach Firebase before we redirect.
             try { await firebaseRequest('PUT', 'settings', existingSettings); } catch(e) { console.warn('ZamAgro: settings push failed', e); }
+            try { await ensureSyncCode(); } catch(e) { console.warn('ZamAgro: sync code setup failed', e); }
 
             await publishUsernameDirectoryEntry(cloudAuth?.idToken, adminUser, {
                 uid: cloudAuth.uid, email: cloudEmail, role: 'admin', username: adminUser
@@ -2825,6 +2978,7 @@
             // Force-push settings to Firebase immediately now that cloudAuth exists, so company
             // name is guaranteed to reach the cloud before redirecting to login.
             try { await firebaseRequest('PUT', 'settings', existingSettings); } catch(e) { console.warn('ZamAgro: settings push failed', e); }
+            try { await ensureSyncCode(); } catch(e) { console.warn('ZamAgro: sync code setup failed', e); }
 
             await publishUsernameDirectoryEntry(cloudAuth?.idToken, adminUser, {
                 uid: cloudAuth.uid, email: cloudEmail, role: 'admin', username: adminUser
@@ -2890,8 +3044,9 @@
             localStorage.setItem(AUTH_KEY, JSON.stringify(accounts));
             if (cloudAuth) {
                 const idTok = await getFreshIdToken();
+                const syncCode = await ensureSyncCode();
                 await publishUsernameDirectoryEntry(idTok, newUser, {
-                    uid: cloudAuth.uid, email: cloudAuth.email, role: 'client', salt, hash
+                    uid: cloudAuth.uid, email: cloudAuth.email, role: 'client', salt, hash, syncCode
                 });
             }
             document.getElementById(`staff-new-user-${slot}`).value = '';
@@ -3062,12 +3217,13 @@
                 });
                 let snapshot;
                 try {
-                    snapshot = await Promise.race([fetchPublicBusinessSnapshot(cloudAuth.uid), _timeout]);
+                    snapshot = await Promise.race([fetchAuthedBusinessSnapshot(cloudAuth.uid, cloudAuth.idToken), _timeout]);
                 } catch (e) {
                     console.error('ZamAgro: cloud-first admin snapshot fetch failed', e);
                     return { valid: false, networkError: true, errorMessage: e && e.message };
                 }
                 rebuildLocalDataFromSnapshot(snapshot);
+                ensureSyncCode().catch(()=>{});
                 const adminSalt = genSalt();
                 const newAccounts = {
                     admin: { username, salt: adminSalt, hash: await pbkdf2Hash(password, adminSalt) },
@@ -3109,12 +3265,13 @@
                 });
                 let snapshot;
                 try {
-                    snapshot = await fetchPublicBusinessSnapshot(cloudAuth.uid);
+                    snapshot = await fetchAuthedBusinessSnapshot(cloudAuth.uid, cloudAuth.idToken);
                 } catch (e) {
                     console.error('ZamAgro: directory-based admin snapshot fetch failed', e);
                     return { valid: false, networkError: true, errorMessage: e && e.message };
                 }
                 rebuildLocalDataFromSnapshot(snapshot);
+                ensureSyncCode().catch(()=>{});
                 // Recreate the local admin (and client, if any) accounts so future logins on
                 // this device can skip the directory lookup next time (still requires a live
                 // cloud check to actually log in — see loginForm handler — but saves a lookup).
@@ -3133,14 +3290,19 @@
 
             // role === 'client': staff have no Firebase Auth user of their own. Verify the
             // password locally against the hash stored in the public directory, then read the
-            // business's data via the public (no-auth) read path.
+            // business's data via its rotatable public sync code (never the real uid — see
+            // Database Rules: businesses/{uid} is private, snapshots/{syncCode} is the public,
+            // owner-revocable stand-in used only for this staff bootstrap).
             if (!entry.salt || !entry.hash) return { valid: false };
             const hash = await pbkdf2Hash(password, entry.salt);
             if (hash !== entry.hash) return { valid: false };
+            if (!entry.syncCode) {
+                return { valid: false, errorMessage: 'Staff access needs to be re-enabled by the business owner — ask them to log in as admin once, then re-save this staff account.' };
+            }
 
             let snapshot;
             try {
-                snapshot = await fetchPublicBusinessSnapshot(entry.uid);
+                snapshot = await fetchPublicSnapshotByCode(entry.syncCode);
             } catch (e) {
                 console.error('ZamAgro: staff snapshot fetch failed', e);
                 return { valid: false, networkError: true, errorMessage: e && e.message };
