@@ -1026,6 +1026,12 @@
                     <div style="font-size:.78rem;color:var(--text-muted);margin-top:.4rem;">Last synced: <span id="cloud-last-synced">—</span></div>
                 </div>
 
+                <div class="card" style="margin-bottom: 2rem;border:1.5px solid #ffcdd2;">
+                    <h3 style="margin-bottom: 1rem;color:var(--danger);">⚠ Danger Zone</h3>
+                    <p style="color:var(--text-muted);font-size:.82rem;margin-bottom:.9rem;">Permanently deletes all Inventory, Sales, Purchases, Expenses, FISP, Credit, Customers, Suppliers, and Adjustments — locally and in the cloud. Your login, license, and settings are kept. This cannot be undone.</p>
+                    <button class="btn btn-sm" style="background:var(--danger);color:#fff;" onclick="confirmClearAllData()">🗑 Clear All Data</button>
+                </div>
+
                 <div class="card" style="margin-bottom: 2rem;">
                     <h3 style="margin-bottom: 1rem;">Global Settings</h3>
                     <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
@@ -2801,6 +2807,27 @@
         function resetToTrial() {
             // Admin-only: disabled in customer app.
             showToast('License is managed by the ZamAgro administrator.', 'danger');
+        }
+
+        // ── DANGER ZONE: wipe all transactional data, keep login/settings/license ──
+        function confirmClearAllData() {
+            if (currentUser !== 'admin') {
+                showToast('Only the admin account can clear data.', 'danger');
+                return;
+            }
+            const typed = prompt('This permanently deletes ALL Inventory, Sales, Purchases, Expenses, FISP, Credit, Customers, Suppliers, and Adjustments — locally and in the cloud.\n\nType DELETE to confirm:');
+            if (typed !== 'DELETE') {
+                if (typed !== null) showToast('Cancelled — you must type DELETE exactly.', 'danger');
+                return;
+            }
+            clearAllData();
+        }
+
+        function clearAllData() {
+            const collections = ['inventory','sales','purchases','expenses','fisp','credit','customers','suppliers','adjustments'];
+            collections.forEach(key => { db[key] = []; }); // routes through writeCollection -> local + cloud sync
+            refreshAll();
+            showToast('All data cleared.', 'success');
         }
 
         // Show/hide lifetime expiry date input
