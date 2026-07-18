@@ -1819,6 +1819,7 @@
         const APP_CHECK_SITE_KEY = ""; // optional reCAPTCHA v3 site key, see step 4 above
 
         const CLOUD_KEY       = 'za_cloud_auth';   // { uid, email, idToken, refreshToken, idTokenExpiry }
+        const LOCAL_SESSION_KEY = 'za_local_session'; // { role, displayName } — marks an active logged-in session across refreshes
         const SYNC_QUEUE_KEY  = 'za_pending_sync'; // persistent offline-safe outbox
         const LAST_SYNCED_KEY = 'za_last_synced';  // persisted so "Last synced" survives a page reload
         const SYNC_COLLECTIONS = ['inventory', 'sales', 'purchases', 'expenses', 'fisp', 'credit', 'customers', 'suppliers', 'adjustments'];
@@ -3158,6 +3159,7 @@
             if (valid) {
                 clearLockout();
                 currentUser = role;
+                localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ role, displayName }));
                 document.getElementById('login-page').classList.add('hidden');
                 document.getElementById('app-layout').classList.remove('hidden');
                 document.getElementById('user-display-name').textContent = displayName;
@@ -3329,6 +3331,7 @@
 
         function logout() {
             currentUser = null;
+            localStorage.removeItem(LOCAL_SESSION_KEY);
             delete document.getElementById('app-layout').dataset.role;
             showLanding();
         }
@@ -6750,7 +6753,35 @@
         // loginForm submit handled by secure auth above
 
         // --- INIT ---
-        showLanding();
+        async function boot() {
+            let session = null;
+            try { session = JSON.parse(localStorage.getItem(LOCAL_SESSION_KEY)); } catch(e) {}
+
+            if (!cloudAuth) cloudAuth = loadCloudAuth(); // this script may run before the DOMContentLoaded handler that normally sets this
+            if (!session || !session.role || !cloudAuth) { showLanding(); return; }
+
+            // Confirm the cloud session can still be refreshed before trusting it —
+            // if the refresh token is dead/revoked, fall back to the login page.
+            const idToken = await getFreshIdToken();
+            if (!idToken) {
+                localStorage.removeItem(LOCAL_SESSION_KEY);
+                showLanding();
+                return;
+            }
+
+            currentUser = session.role;
+            document.getElementById('landing-page').classList.add('hidden');
+            document.getElementById('login-page').classList.add('hidden');
+            document.getElementById('setup-page').classList.add('hidden');
+            document.getElementById('app-layout').classList.remove('hidden');
+            document.getElementById('user-display-name').textContent = session.displayName || '';
+            document.getElementById('app-layout').dataset.role = session.role;
+            applyLicenseUI();
+            renderCloudSyncUI();
+            refreshAll();
+            nav('dashboard');
+        }
+        boot();
 
     
 
