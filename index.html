@@ -627,6 +627,7 @@
                 <div style="font-size:1.5rem">✅</div>
                 <div style="font-weight:700;color:#2e7d32;margin:.3rem 0;">Request Sent!</div>
                 <div style="font-size:.82rem;color:#555;">We'll verify your payment and activate your plan shortly. Contact us on WhatsApp if you need faster assistance.</div>
+                <button onclick="closeModal('modal-sub-request')" class="btn btn-primary" style="margin-top:1rem;width:100%;">Close</button>
             </div>
             <div id="subreq-actions" style="display:flex;gap:.75rem;margin-top:.5rem;">
                 <button onclick="closeModal('modal-sub-request')" class="btn" style="flex:1;background:#f0f0f0;color:#555;">Cancel</button>
@@ -1687,7 +1688,7 @@
             customers:    [],
             suppliers:    [],
             adjustments:  [],
-            settings:  { lowStockThreshold: 20, creditTermDays: 30, taxRegime: 'none', stockCategories: ['Fertilizer','Seed','Chemical','Tool'], expenseCategories: ['Transport','Rent','Salaries','Utilities','Marketing','Maintenance'] }
+            settings:  { lowStockThreshold: 20, creditTermDays: 30, taxRegime: 'none', stockCategories: [], expenseCategories: [] }
         };
 
         // Load a collection from localStorage, falling back to seed data on first run.
@@ -3959,7 +3960,7 @@
         // ── EXPENSE CATEGORIES ───────────────────────────────────────────
         function getExpenseCategories() {
             const cats = db.settings.expenseCategories;
-            return Array.isArray(cats) && cats.length ? cats : ['Transport','Rent','Salaries','Utilities','Marketing','Maintenance'];
+            return Array.isArray(cats) ? cats : [];
         }
 
         function populateExpCatSelect(selectId, currentVal) {
@@ -4016,7 +4017,7 @@
         // ── STOCK CATEGORIES ─────────────────────────────────────────────
         function getStockCategories() {
             const cats = db.settings.stockCategories;
-            return Array.isArray(cats) && cats.length ? cats : ['Fertilizer','Seed','Chemical','Tool'];
+            return Array.isArray(cats) ? cats : [];
         }
 
         function populateCatSelect(selectId, currentVal) {
