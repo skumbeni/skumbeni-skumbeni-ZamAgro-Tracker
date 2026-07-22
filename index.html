@@ -1755,7 +1755,7 @@
         }
 
         function writeSettings(newVal) {
-            if (!newVal.updatedAt) newVal.updatedAt = Date.now();
+            newVal.updatedAt = Date.now();
             localStorage.setItem(KEYS.settings, JSON.stringify(newVal));
             if (!window.__applyingRemoteSync) {
                 queueSettingsSync(newVal);
@@ -2162,7 +2162,7 @@
             setSyncStatus('syncing');
             for (const op of q) {
                 try {
-                    const path = `${op.collection}/${op.recordId}`;
+                    const path = op.collection === 'settings' ? 'settings' : `${op.collection}/${op.recordId}`;
                     if (op.method === 'DELETE') await firebaseRequest('DELETE', path, null);
                     else await firebaseRequest('PUT', path, op.data);
                     q = q.filter(o => o.opId !== op.opId);
