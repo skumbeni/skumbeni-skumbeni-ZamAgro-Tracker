@@ -3854,6 +3854,7 @@
             const s = db.settings;
             return {
                 name:    s.companyName    || 'ZamAgro Track',
+                tpin:    s.companyTPIN    || '',
                 phone:   s.companyPhone   || '',
                 address: s.companyAddress || '',
                 logo:    s.companyLogo    || ''
@@ -4804,6 +4805,7 @@
             const logoRow    = co.logo    ? `<img src="${co.logo}" class="receipt-logo" alt="">` : '';
             const phoneRow   = co.phone   ? `<div style="text-align:center;font-size:.78rem;color:#555;">${esc(co.phone)}</div>` : '';
             const addressRow = co.address ? `<div style="text-align:center;font-size:.78rem;color:#555;">${esc(co.address)}</div>` : '';
+            const tpinRow    = co.tpin    ? `<div style="text-align:center;font-size:.78rem;color:#555;">TPIN: ${esc(co.tpin)}</div>` : '';
             const momoRow    = sale.momoRef
                 ? `<div class="receipt-row"><span>MoMo Ref:</span><span>${esc(sale.momoRef)}</span></div>` : '';
 
@@ -4827,6 +4829,7 @@
                 <div class="receipt-title">${co.logo ? '' : '🌱 '}${esc(co.name)}</div>
                 ${phoneRow}
                 ${addressRow}
+                ${tpinRow}
                 <div class="receipt-sub">Sales Receipt</div>
                 <hr class="receipt-divider">
                 <div class="receipt-row"><span>Receipt No:</span><span>${esc(sale.id)}</span></div>
@@ -4858,6 +4861,7 @@
             lines.push(`🌱 *${co.name}*`);
             if (co.phone)   lines.push(`📞 ${co.phone}`);
             if (co.address) lines.push(`📍 ${co.address}`);
+            if (co.tpin)    lines.push(`TPIN: ${co.tpin}`);
             lines.push('');
             lines.push(`*SALES RECEIPT*`);
             lines.push(`Receipt No: ${s.id}`);
